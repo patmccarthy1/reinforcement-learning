@@ -87,7 +87,7 @@ class Environment:
                       int((1-next_state[1]) * self.magnification)),
             color=(0, 255, 0), thickness=5)
         # show image
-        cv2.imwrite('greedy_policy_online.png', self.image)
+        cv2.imwrite('epsilon_greedy_policy_5.png', self.image)
         cv2.imshow("Environment", self.image)
         # this line is necessary to allow time for the image to be rendered on the screen
         cv2.waitKey(1)

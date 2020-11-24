@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import collections
 import random
 import cv2
+import copy
 
 
 # Import the environment module
@@ -34,9 +35,10 @@ class Agent:
         self.total_reward = 0.0
 
     # Function to make the agent take one step in the environment.
-    def step(self):
+    def step(self,episode):
         # Choose the next action.
-        discrete_action = self._choose_next_action()
+        # discrete_action = self._choose_next_action_random() 
+        discrete_action = self._choose_epsilon_greedy_action(self.state,episode) # greedy action
         # Convert the discrete action into a continuous action.
         continuous_action = self._discrete_action_to_continuous(discrete_action)
         # Take one step in the environment, using this continuous action, based on the agent's current state. This returns the next state, and the new distance to the goal from this new state. It also draws the environment, if display=True was set when creating the environment object..
@@ -53,10 +55,31 @@ class Agent:
         return transition
 
     # Function for the agent to choose its next action
-    def _choose_next_action(self):
+    def _choose_next_action_random(self):
         # Choose random action and return
         action = np.random.randint(0,4)  
         return action
+    
+    # function to choose action in epsilon greedy manner
+    def _choose_epsilon_greedy_action(self, current_state, k):
+        
+        epsilon_decay = 0.993
+        epsilon = epsilon_decay**k
+        
+        current_state = torch.tensor(current_state)
+        
+        predictions = dqn.q_network.forward(torch.unsqueeze(current_state, 0))
+        greedy_action = int(torch.argmax(predictions,1)[0])
+        
+        num = np.random.random()        
+        
+        if num < epsilon:
+            action = greedy_action
+        else:
+            action = np.random.choice([0,1,2,3])
+            
+        return action
+        
 
     # Function to convert discrete action (as used by a DQN) to a continuous action (as used by the environment).
     # 0 = right, 1 = left, 2 = up, 3 = down
@@ -73,7 +96,7 @@ class Agent:
 
     # Function for the agent to compute its reward. In this example, the reward is based on the agent's distance to the goal after the agent takes an action.
     def _compute_reward(self, distance_to_goal):
-        reward = 1 - distance_to_goal
+        reward = float(0.1*(1 - distance_to_goal))
         return reward
 
 
@@ -106,6 +129,8 @@ class DQN:
         self.q_network = Network(input_dimension=2, output_dimension=4)
         # Define the optimiser which is used when updating the Q-network. The learning rate determines how big each gradient step is during backpropagation.
         self.optimiser = torch.optim.Adam(self.q_network.parameters(), lr=0.001)
+        # create target network object
+        self.target_network = copy.deepcopy(self.q_network)
 
     # Function that is called whenever we want to train the Q-network. Each call to this function takes in a transition tuple containing the data we use to update the Q-network.
     def train_q_network(self, transition, train_type, discount):
@@ -164,7 +189,8 @@ class DQN:
         minibatch_next_states_tensor = torch.tensor(minibatch_next_states)
         
         # next state Q values for use in Bellman equation
-        max_next_state_Q_values, idx = torch.max(self.q_network.forward(minibatch_next_states_tensor),1)
+        # max_next_state_Q_values, idx = torch.max(self.q_network.forward(minibatch_next_states_tensor),1)
+        max_next_state_Q_values, idx = torch.max(self.target_network.forward(minibatch_next_states_tensor),1) # target network
         max_next_state_Q_values = max_next_state_Q_values.detach()
         
         # predict Q values
@@ -173,14 +199,24 @@ class DQN:
         # use Bellman equation to calculate actual Q values
         Q_actual = rewards_tensor + discount*max_next_state_Q_values
         
-        # full Bellman equation
-        # Q_predicted = instantaneous_reward + discount*np.amax(predicted_rewards[0,:])
-        
         loss = torch.nn.MSELoss()(Q_predictions, Q_actual)
         
         return loss
-
-# class TargetNetwork:
+    
+    # function to update target network by copying weights from main network when called
+    def update_target_network(self):
+        self.target_network = copy.deepcopy(self.q_network)
+        
+    # function to get Q values
+    def get_Q_vals(self):
+        q_values = np.zeros([10,10,4]) # create 3D array to hold q values
+        for row in range(10):
+            for col in range(10):
+                state = torch.tensor([row/10 + 0.05,col/10 + 0.05])
+                for action in range(4):
+                    predicted_rewards = self.q_network.forward(torch.unsqueeze(state,0))
+                    q_values[row,col,action] = predicted_rewards[0, action]
+        return q_values
     
 # REPLAY BUFFER CLASS FOR MINIBATCH TRAINING
 class ReplayBuffer:
@@ -195,6 +231,9 @@ class ReplayBuffer:
         # enumerate deque and create list of tuples according to randomly generated minibatch indices         
         minibatch = [transition_tuple for i, transition_tuple in enumerate(self.buffer) if i in minibatch_indices]
         return minibatch
+    
+    def get_length(self):
+        return len(self.buffer)
 
 class QValueVisualiser:
 
@@ -226,9 +265,12 @@ class QValueVisualiser:
         # Draw the grid cells
         self._draw_grid_cells()
         # Show the image
-        cv2.imwrite('q_values_image_online.png', self.q_values_image)
+        # cv2.imwrite('q_values_epsilon_greedy.png', self.q_values_image)
         cv2.imshow("Q Values", self.q_values_image)
-        cv2.waitKey()
+        cv2.waitKey(1)
+    
+    def save_Q_image(self,name):
+        cv2.imwrite('{}.png'.format(name), self.q_values_image)
 
     def _draw_q_value(self, x, y, action, q_value_norm):
         # First, convert state space to image space for the "up-down" axis, because the world space origin is the bottom left, whereas the image space origin is the top left
@@ -296,7 +338,7 @@ if __name__ == "__main__":
     # Create an environment.
     # If display is True, then the environment will be displayed after every agent step. This can be set to False to speed up training time. The evaluation in part 2 of the coursework will be done based on the time with display=False.
     # Magnification determines how big the window will be when displaying the environment on your monitor. For desktop monitors, a value of 1000 should be about right. For laptops, a value of 500 should be about right. Note that this value does not affect the underlying state space or the learning, just the visualisation of the environment.
-    environment = Environment(display=False, magnification=500)
+    environment = Environment(display=True, magnification=500)
     
     # Create an agent
     agent = Agent(environment)
@@ -304,48 +346,46 @@ if __name__ == "__main__":
     # Create a DQN (Deep Q-Network)
     dqn = DQN()
     
-    num_episodes = 100 # number of episodes
-    episode_length = 20 # episode length
+    num_episodes = 400 # number of episodes
+    episode_length = 50 # episode length
 
     # TRAINING
     
-    # Online training 
-    # Loop over episodes
-    ave_loss_list = []
-    for ep in range(num_episodes):
-        # Reset the environment for the start of the episode.
-        agent.reset()
-        loss_list = []
-        episode_length = 50
-        gamma = 0
-        # Loop over steps within this episode. The episode length here is 20.
-        for step_num in range(episode_length):
-            # Step the agent once, and get the transition tuple for this step
-            transition = agent.step()
-            print('Transition ',step_num, ':', transition,'\n')
-            loss = dqn.train_q_network(transition, 'online', gamma) # calculate loss for single step
-            # Sleep, so that you can observe the agent moving. Note: this line should be removed when you submit the code in your coursework, to speed up training
-            loss_list.append(loss) # append loss to list
-        ave_loss = np.mean(loss_list)
-        ave_loss_list.append(ave_loss)
-    plt.plot(range(len(ave_loss_list)),ave_loss_list)
-    plt.yscale('log')
-    plt.grid()
-    plt.xlabel('number of episodes')
-    plt.ylabel('average loss')
-    plt.title('Average loss vs number of episodes (online learning)')
-    plt.savefig('ave_loss_vs_episodes_online.png', dpi=500)
+    # # Online training 
+    # # Loop over episodes
+    # ave_loss_list = []
+    # for ep in range(num_episodes):
+    #     # Reset the environment for the start of the episode.
+    #     agent.reset()
+    #     loss_list = []
+    #     gamma = 0
+    #     # Loop over steps within this episode. The episode length here is 20.
+    #     for step_num in range(episode_length):
+    #         # Step the agent once, and get the transition tuple for this step
+    #         transition = agent.step()
+    #         print('Episode: ', ep, '\nTransition ',step_num, ':', transition,'\n')
+    #         loss = dqn.train_q_network(transition, 'online', gamma) # calculate loss for single step
+    #         # Sleep, so that you can observe the agent moving. Note: this line should be removed when you submit the code in your coursework, to speed up training
+    #         loss_list.append(loss) # append loss to list
+    #     ave_loss = np.mean(loss_list)
+    #     ave_loss_list.append(ave_loss)
+    # plt.plot(range(len(ave_loss_list)),ave_loss_list)
+    # plt.yscale('log')
+    # plt.grid()
+    # plt.xlabel('number of episodes')
+    # plt.ylabel('average loss')
+    # plt.title('Loss Curve for Online Learning')
+    # plt.savefig('loss_online.png', dpi=500)
 
         
-    # # Minibatch training
+    # Minibatch training
     # ave_loss_list = []
+    # buffer = ReplayBuffer() # create a new replay buffer to store transitions
     # for episode in range(num_episodes):
     #     # Reset the environment for the start of the episode.
     #     agent.reset()
-    #     buffer = ReplayBuffer() # create a new replay buffer to store transitions
     #     loss_list = []
-    #     episode_length = 100
-    #     minibatch_length = 50
+    #     minibatch_length = 100
     #     gamma = 0.9 # discount factor
     #     print('Episode: ', episode)
     #     # Loop over steps within this episode. The episode length here is 20.
@@ -354,8 +394,8 @@ if __name__ == "__main__":
     #         transition = agent.step()
     #         print('Episode: ', episode, '\nTransition ', step_num, ':', transition,'\n')
     #         buffer.append_transition_tuple(transition)
-    #         if step_num >= minibatch_length:
-    #             minibatch = buffer.sample_minibatch(step_num, minibatch_length) # sample minibatch
+    #         if buffer.get_length() >= minibatch_length:
+    #             minibatch = buffer.sample_minibatch(buffer.get_length(), minibatch_length) # sample minibatch
     #             loss = dqn.train_q_network(minibatch,'minibatch',gamma) # calculate loss for minibatch
     #             loss_list.append(loss) # append minibatch loss to list
     #     ave_loss = np.mean(loss_list) # calculate average loss for episode
@@ -368,21 +408,62 @@ if __name__ == "__main__":
     # plt.grid()
     # plt.xlabel('number of episodes')
     # plt.ylabel('average loss')
-    # plt.title('Average loss vs number of episodes (mini-batch learning)')
-    # plt.savefig('ave_loss_vs_episodes_minibatch.png', dpi=500)
+    # plt.title('Loss Curve for Buffer, Bellman equation ($\gamma$ = 0.9) and no Target Network')
+    # plt.savefig('loss_replay_bellman_no_target.png', dpi=500)
     
-   # %% CALCULATE Q VALUES USING TRAINED NETWORK AND VISUALISE
-    # q_values = np.zeros([10,10,4]) # create 3D array to hold q values
-    # for row in range(10):
-    #     for col in range(10):
-    #         state = torch.tensor([row/10 + 0.05,col/10 + 0.05])
-    #         for action in range(4):
-    #             predicted_rewards = dqn.q_network.forward(torch.unsqueeze(state,0))
-    #             q_values[row,col,action] = predicted_rewards[0, action]
-    # print(q_values)
+    # Bellman equation with target network
+    # Minibatch training
+    ave_loss_list = []
+    buffer = ReplayBuffer() # create a new replay buffer to store transitions
+    visualiser = QValueVisualiser(environment)
+    for episode in range(num_episodes):
+        # Reset the environment for the start of the episode.
+        agent.reset()
+        loss_list = []
+        minibatch_length = 100
+        gamma = 0.9 # discount factor
+        # Loop over steps within this episode. The episode length here is 20.
+        for step_num in range(episode_length):
+            # Step the agent once, and get the transition tuple for this step
+            transition = agent.step(episode)
+            # print('Episode: ', episode, '\nTransition ', step_num, ':', transition,'\n')
+            buffer.append_transition_tuple(transition)
+            if buffer.get_length() >= minibatch_length:
+                minibatch = buffer.sample_minibatch(buffer.get_length(), minibatch_length) # sample minibatch
+                loss = dqn.train_q_network(minibatch,'minibatch',gamma) # calculate loss for minibatch
+                loss_list.append(loss) # append minibatch loss to list
+        # if step_num%10 == 0:
+        #     dqn.update_target_network()
+        visualiser.draw_q_values(dqn.get_Q_vals())
+        ave_loss = np.mean(loss_list) # calculate average loss for episode
+        print('Episode: ', episode, '\nLoss: ', ave_loss)
+        ave_loss_list.append(ave_loss) # append average loss to list 
+        if episode%10 == 0:
+            dqn.update_target_network()
+        # train network on minibatches
+            # Sleep, so that you can observe the agent moving. Note: this line should be removed when you submit the code in your coursework, to speed up training
+            # time.sleep(0.2)
+    plt.plot(range(len(ave_loss_list)),ave_loss_list)
+    plt.yscale('log')
+    plt.grid()
+    plt.xlabel('number of episodes')
+    plt.ylabel('average loss')
+    plt.title('Loss Curve for Buffer, Bellman equation ($\gamma$ = 0.9) and Target Network')
+    plt.savefig('loss_replay_bellman_target_epsilon_greedy_5.png', dpi=500)
     
-    # visualiser = QValueVisualiser(environment)
-    # visualiser.draw_q_values(q_values)
+    
+    visualiser.save_Q_image('epsilon_greedy_Q_vals_5')
+
+    
+    #%% CALCULATE Q VALUES USING TRAINED NETWORK AND VISUALISE
+    q_values = np.zeros([10,10,4]) # create 3D array to hold q values
+    for row in range(10):
+        for col in range(10):
+            state = torch.tensor([row/10 + 0.05,col/10 + 0.05])
+            for action in range(4):
+                predicted_rewards = dqn.q_network.forward(torch.unsqueeze(state,0))
+                q_values[row,col,action] = predicted_rewards[0, action]
+    print(q_values)
     
     # CALCULATE OPTIMAL POLICY AND DRAW GREEDY POLICY
     policy = []
@@ -396,3 +477,9 @@ if __name__ == "__main__":
         current_state = next_state
         
     agent.environment.draw_policy(policy)
+    
+    
+    
+    
+    
+    
